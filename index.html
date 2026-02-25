@@ -109,7 +109,7 @@
                 <p id="wait-msg" class="text-red-600 font-bold mt-2 mb-6">Please do not close this window Wait for confirmation.</p>
                 <div id="payment-success-msg" class="hidden animate-bounce-in">
                     <h4 class="text-xl font-bold text-green-700 mb-4">Payment Successful!</h4>
-                    <button onclick="location.reload()" class="bg-indigo-600 text-white py-2 px-6 rounded-lg font-bold">Reload Application</button>
+                    <button onclick="this.innerHTML='<div class=\'btn-loader\'></div>'; this.disabled=true; setTimeout(function(){ document.getElementById('license-lock-overlay').style.display='none'; document.getElementById('main-app').classList.remove('hidden'); startApp(); }, 800);" class="bg-indigo-600 text-white py-2 px-6 rounded-lg font-bold">Reload Application</button>
                 </div>
             </div>
         </div>
@@ -231,15 +231,18 @@
     };
 
     async function callAppsScript(action, payload) {
-        if (action !== 'checkLogin' && action !== 'getCustomerHistory') showLoader();
+        const silentActions = ['checkLogin', 'getCustomerHistory', 'checkLicense', 'getInitialData', 'getDashboardData', 'processSale', 'getProductsForBarcode', 'getCustomersDataList', 'addNewCustomer', 'addNewBrand', 'getReturnableInvoiceDetails', 'processReturn', 'getUsers', 'changePassword', 'addUser', 'deleteUser', 'getSalesDataList'];
+        
+        if (!silentActions.includes(action)) showLoader();
         try {
             const response = await fetch(WEB_APP_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ action: action, payload: payload }), redirect: 'follow' });
             if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
             const result = await response.json();
-            if (action !== 'checkLogin' && action !== 'getCustomerHistory') hideLoader();
+            
+            if (!silentActions.includes(action)) hideLoader();
             return result;
         } catch (error) {
-            if (action !== 'checkLogin' && action !== 'getCustomerHistory') hideLoader();
+            if (!silentActions.includes(action)) hideLoader();
             onFailure({ message: `Network or server call failed: ${error.message}` });
             throw error; 
         }
@@ -265,29 +268,39 @@
         setupLicenseListeners();
     });
 
-    async function handleLogin(e) { 
-        e.preventDefault(); showLoader(); var btn = e.target.querySelector('button'); btn.disabled = true; btn.textContent = "Checking...";
+async function handleLogin(e) { 
+        e.preventDefault(); 
+        var btn = e.target.querySelector('button'); 
+        btn.disabled = true; 
+        btn.innerHTML = '<div class="btn-loader"></div>';
         var c = { username: document.getElementById('username').value, password: document.getElementById('password').value }; 
         try {
             const r = await callAppsScript('checkLogin', c);
             btn.disabled = false; btn.textContent = "Login";
+            
             if (r.success) { 
                 sessionStorage.setItem('isLoggedIn', 'true'); 
                 sessionStorage.setItem('username', r.username);
                 sessionStorage.setItem('role', r.role);
                 document.getElementById('login-screen').style.display = 'none'; 
-                handleLicenseResponse(r.license); // Direct call without second round trip
+                
+                document.getElementById('main-app').classList.remove('hidden');
+                startApp();
+                checkLicense();
+                
+                // Background quiet load for Customer Data
+                if (!isCustomersLoaded) {
+                    callAppsScript('getCustomersDataList').then(res => { if(res.success) { ALL_CUSTOMERS = res.customers || []; isCustomersLoaded = true; } }).catch(e=>{});
+                }
             } else { 
-                hideLoader(); 
                 var err = document.getElementById('login-error'); 
                 err.textContent = r.message || 'Login failed.'; 
                 setTimeout(function() { err.textContent = ''; }, 3000); 
             } 
-        } catch(error) { btn.disabled = false; btn.textContent = "Login"; hideLoader(); }
+        } catch(error) { btn.disabled = false; btn.textContent = "Login"; }
     }
 
     async function checkLicense() {
-        showLoader();
         const res = await callAppsScript('checkLicense');
         handleLicenseResponse(res);
     }
@@ -358,16 +371,20 @@
         }, 10000); 
     }
 
+    var isAppStarted = false;
     async function startApp() {
+        if (isAppStarted) return;
+        isAppStarted = true;
+        
+        sidebarItems.forEach(function(i) { i.addEventListener('click', function(e) { e.preventDefault(); navigateTo(i.getAttribute('href').substring(1)); }); });
+        navigateTo(window.location.hash ? window.location.hash.substring(1) : 'dashboard'); 
+        setupEventListeners();
+        if(typeof setupTableDelegation === 'function') setupTableDelegation(); 
         try {
             const data = await callAppsScript('getInitialData');
             onInitialDataSuccess(data);
             callAppsScript('getCustomerHistory').then(res => { if (res.success) ALL_HISTORY_DATA = res.history; }).catch(e => console.log(e));
         } catch(error) {}
-        sidebarItems.forEach(function(i) { i.addEventListener('click', function(e) { e.preventDefault(); navigateTo(i.getAttribute('href').substring(1)); }); });
-        navigateTo(window.location.hash ? window.location.hash.substring(1) : 'dashboard'); 
-        setupEventListeners();
-        setupTableDelegation(); 
     }
 
     function onInitialDataSuccess(data) { 
@@ -390,18 +407,26 @@
         
         if(pageId === 'dashboard') { try { const d = await callAppsScript('getDashboardData'); updateDashboard(d); } catch(error) {} }
         
-        // Lazy Load Sales
+        // Lazy Load Sales (Smart Inline Loader)
         if(pageId === 'sales' && !isSalesLoaded) {
-            showLoader();
-            try { const res = await callAppsScript('getSalesDataList'); if(res.success) { ALL_SALES = res.sales || []; populateSalesTable(ALL_SALES); isSalesLoaded = true; } } catch(e){}
-            hideLoader();
+            var salesBody = document.getElementById('sales-list-body');
+            salesBody.innerHTML = '<tr><td colspan="10" class="text-center py-12"><div class="btn-loader border-indigo-500 border-t-transparent mb-3" style="border-color:#e5e7eb; border-top-color:#4f46e5; width:40px; height:40px; border-width:4px;"></div><p class="text-gray-500 font-medium">Loading sales history...</p></td></tr>';
+            try { 
+                const res = await callAppsScript('getSalesDataList'); 
+                if(res.success) { ALL_SALES = res.sales || []; populateSalesTable(ALL_SALES); isSalesLoaded = true; } 
+                else { salesBody.innerHTML = '<tr><td colspan="10" class="text-center py-4 text-red-500">Failed to load</td></tr>'; } 
+            } catch(e){ salesBody.innerHTML = '<tr><td colspan="10" class="text-center py-4 text-red-500">Error loading data</td></tr>'; }
         }
         
-        // Lazy Load Customers
+        // Lazy Load Customers (Smart Inline Loader)
         if(pageId === 'customers' && !isCustomersLoaded) {
-            showLoader();
-            try { const res = await callAppsScript('getCustomersDataList'); if(res.success) { ALL_CUSTOMERS = res.customers || []; populateCustomerTable(ALL_CUSTOMERS); isCustomersLoaded = true; } } catch(e){}
-            hideLoader();
+            var custBody = document.getElementById('customer-list-body');
+            custBody.innerHTML = '<tr><td colspan="4" class="text-center py-12"><div class="btn-loader border-indigo-500 border-t-transparent mb-3" style="border-color:#e5e7eb; border-top-color:#4f46e5; width:40px; height:40px; border-width:4px;"></div><p class="text-gray-500 font-medium">Loading customers...</p></td></tr>';
+            try { 
+                const res = await callAppsScript('getCustomersDataList'); 
+                if(res.success) { ALL_CUSTOMERS = res.customers || []; populateCustomerTable(ALL_CUSTOMERS); isCustomersLoaded = true; } 
+                else { custBody.innerHTML = '<tr><td colspan="4" class="text-center py-4 text-red-500">Failed to load</td></tr>'; } 
+            } catch(e){ custBody.innerHTML = '<tr><td colspan="4" class="text-center py-4 text-red-500">Error loading data</td></tr>'; }
         }
         
         // Handle Admin permissions on Settings Page
@@ -522,24 +547,36 @@
         if (newP !== conP) {
             return showToast("New passwords do not match!", "error");
         }
+        
+        var btn = e.target.querySelector('button[type="submit"]');
+        var oldBtnText = btn.innerHTML;
+        btn.innerHTML = '<div class="btn-loader"></div>'; btn.disabled = true;
+
         var payload = { username: sessionStorage.getItem('username'), oldPassword: oldP, newPassword: newP };
         try {
             const res = await callAppsScript('changePassword', payload);
+            btn.innerHTML = oldBtnText; btn.disabled = false;
             if(res.success){
                 showToast("Password changed successfully!", "success");
                 e.target.reset();
             } else {
                 showToast(res.message, "error");
             }
-        } catch(err) {}
+        } catch(err) { btn.innerHTML = oldBtnText; btn.disabled = false; }
     }
 
     async function handleAddUser(e) {
         e.preventDefault();
         var u = document.getElementById('new-username').value;
         var p = document.getElementById('new-user-password').value;
+        
+        var btn = e.target.querySelector('button[type="submit"]');
+        var oldBtnText = btn.innerHTML;
+        btn.innerHTML = '<div class="btn-loader"></div>'; btn.disabled = true;
+
         try {
             const res = await callAppsScript('addUser', {username: u, password: p});
+            btn.innerHTML = oldBtnText; btn.disabled = false;
             if(res.success){
                 showToast("User added successfully!", "success");
                 e.target.reset();
@@ -547,14 +584,15 @@
             } else {
                 showToast(res.message, "error");
             }
-        } catch(err) {}
+        } catch(err) { btn.innerHTML = oldBtnText; btn.disabled = false; }
     }
 
     async function loadUsers() {
+        var tbody = document.getElementById('user-list-body');
+        tbody.innerHTML = '<tr><td colspan="3" class="text-center py-4"><div class="btn-loader border-indigo-500 border-t-transparent" style="border-color:#e5e7eb; border-top-color:#4f46e5;"></div></td></tr>';
         try {
             const res = await callAppsScript('getUsers');
             if(res.success){
-                var tbody = document.getElementById('user-list-body');
                 tbody.innerHTML = res.users.map(function(user) {
                     var deleteBtn = `<button class="text-red-600 hover:text-red-900 font-bold ml-2 delete-user-btn" data-username="${user.username}">Delete</button>`;
                     if(user.role === 'Admin') deleteBtn = `<span class="text-gray-400 text-xs font-bold ml-2">Cannot Delete</span>`;
@@ -568,8 +606,8 @@
                         document.getElementById('delete-user-modal').style.display = 'flex';
                     });
                 });
-            }
-        } catch(err) {}
+            } else { tbody.innerHTML = '<tr><td colspan="3" class="text-center text-red-500 py-4">Failed to load</td></tr>'; }
+        } catch(err) { tbody.innerHTML = '<tr><td colspan="3" class="text-center text-red-500 py-4">Error loading data</td></tr>'; }
     }
         document.getElementById('cancel-delete-user').addEventListener('click', function() {
             document.getElementById('delete-user-modal').style.display = 'none';
@@ -577,13 +615,25 @@
 
         document.getElementById('confirm-delete-user').addEventListener('click', async function() {
             var username = document.getElementById('delete-username-hidden').value;
-            document.getElementById('delete-user-modal').style.display = 'none';
-            const delRes = await callAppsScript('deleteUser', { username: username });
-            if(delRes.success) { 
-                showToast(delRes.message, "success"); 
-                loadUsers(); 
-            } else {
-                showToast(delRes.message, "error");
+            
+            var btn = this;
+            var oldBtnText = btn.innerHTML;
+            btn.innerHTML = '<div class="btn-loader"></div>'; btn.disabled = true;
+
+            try {
+                const delRes = await callAppsScript('deleteUser', { username: username });
+                btn.innerHTML = oldBtnText; btn.disabled = false;
+                document.getElementById('delete-user-modal').style.display = 'none';
+                
+                if(delRes.success) { 
+                    showToast(delRes.message, "success"); 
+                    loadUsers(); 
+                } else {
+                    showToast(delRes.message, "error");
+                }
+            } catch(err) { 
+                btn.innerHTML = oldBtnText; btn.disabled = false; 
+                document.getElementById('delete-user-modal').style.display = 'none';
             }
         });
 
@@ -756,52 +806,81 @@
     function handleSkuEnter(e) { if (e.key === 'Enter') { e.preventDefault(); processBillAction(); } }
     function handleSaleQtyEnter(e) { if (e.key === 'Enter') { e.preventDefault(); processBillAction(); } }
     var ALL_HISTORY_DATA = null;
+    var isSearchingCustomer = false;
     async function performCustomerSearch() {
+        if (isSearchingCustomer) return;
         var phoneInput = document.getElementById('cust-phone'); var phone = phoneInput.value.trim(); var historyDiv = document.getElementById('cust-history-status');
         if (!phone || phone.length !== 11) return showToast('Please enter a valid 11-digit number.', 'error');
         var sPhone = phone.startsWith('0') ? phone : '0' + phone; 
         
-        // Data load checker block (Jodi data aage theke load na thake, tahole ekhon load korbe)
-        if (!isCustomersLoaded) {
-            showLoader();
-            try { 
+        isSearchingCustomer = true;
+        var btn = document.getElementById('check-cust-btn');
+        var oldBtnText = btn.innerHTML;
+        btn.innerHTML = '<div class="btn-loader" style="width: 16px; height: 16px; border-width: 2px;"></div>'; btn.disabled = true;
+
+        try {
+            if (!isCustomersLoaded) {
                 const res = await callAppsScript('getCustomersDataList'); 
                 if(res.success) { ALL_CUSTOMERS = res.customers || []; isCustomersLoaded = true; } 
-            } catch(e){}
-            hideLoader();
-        }
-
-        var c = ALL_CUSTOMERS.find(function(c) { return c[1] === sPhone; });
-        if (ALL_HISTORY_DATA === null) { const res = await callAppsScript('getCustomerHistory'); ALL_HISTORY_DATA = res.success ? res.history : {}; }
-        
-        if (c) {
-            document.getElementById('cust-name').value = c[0]; document.getElementById('cust-address').value = c[2]; historyDiv.classList.remove('hidden'); historyDiv.style.display = "block"; 
-            var hist = ALL_HISTORY_DATA[sPhone];
-            if (!hist || hist.purchased === 0) historyDiv.innerHTML = `<span style="color: #16a34a;">New Customer</span>`;
-            else historyDiv.innerHTML = `<span style="color: #0d9488;">Purchased Qty: ${hist.purchased}</span> | <span style="color: #ea580c;">Partial Delivery Qty: ${hist.partial}</span> | <span style="color: #dc2626;">Return Qty: ${hist.returned}</span>`;
-            showToast('Customer Found!', 'success');
-        } else {
-            historyDiv.classList.remove('hidden'); historyDiv.style.display = "block"; historyDiv.innerHTML = `<span style="color: #16a34a;">New Customer</span>`;
-            document.getElementById('new-cust-modal-phone').textContent = phone; document.getElementById('add-customer-modal').style.display = 'flex'; document.getElementById('new-cust-modal-name').focus();
+            }
+            
+            var c = ALL_CUSTOMERS.find(function(c) { return c[1] === sPhone; });
+            if (ALL_HISTORY_DATA === null) { const res = await callAppsScript('getCustomerHistory'); ALL_HISTORY_DATA = res.success ? res.history : {}; }
+            
+            if (c) {
+                document.getElementById('cust-name').value = c[0]; document.getElementById('cust-address').value = c[2]; historyDiv.classList.remove('hidden'); historyDiv.style.display = "block"; 
+                var hist = ALL_HISTORY_DATA[sPhone];
+                if (!hist || hist.purchased === 0) historyDiv.innerHTML = `<span style="color: #16a34a;">New Customer</span>`;
+                else historyDiv.innerHTML = `<span style="color: #0d9488;">Purchased Qty: ${hist.purchased}</span> | <span style="color: #ea580c;">Partial Delivery Qty: ${hist.partial}</span> | <span style="color: #dc2626;">Return Qty: ${hist.returned}</span>`;
+                showToast('Customer Found!', 'success');
+            } else {
+                historyDiv.classList.remove('hidden'); historyDiv.style.display = "block"; historyDiv.innerHTML = `<span style="color: #16a34a;">New Customer</span>`;
+                document.getElementById('new-cust-modal-phone').textContent = phone; document.getElementById('add-customer-modal').style.display = 'flex'; document.getElementById('new-cust-modal-name').focus();
+            }
+        } catch (e) {
+            console.error(e);
+        } finally {
+            btn.innerHTML = oldBtnText; btn.disabled = false;
+            isSearchingCustomer = false;
         }
     }
 
-    async function handleSaveNewCustomer(e) { e.preventDefault(); var c = { phone: document.getElementById('new-cust-modal-phone').textContent, name: document.getElementById('new-cust-modal-name').value, address: document.getElementById('new-cust-modal-address').value }; try { const r = await callAppsScript('addNewCustomer', c); if (r.success) { showToast('Customer saved!', 'success'); ALL_CUSTOMERS.push(r.newCustomer); populateCustomerTable(ALL_CUSTOMERS); document.getElementById('cust-phone').value = r.newCustomer[1]; document.getElementById('cust-name').value = r.newCustomer[0]; document.getElementById('cust-address').value = r.newCustomer[2]; document.getElementById('add-customer-modal').style.display = 'none'; e.target.reset(); } else { onFailure(r); } } catch(err){} }
+    async function handleSaveNewCustomer(e) { 
+        e.preventDefault(); 
+        var btn = e.target.querySelector('button[type="submit"]');
+        var oldBtnText = btn.innerHTML;
+        btn.innerHTML = '<div class="btn-loader"></div>'; btn.disabled = true;
+        var c = { phone: document.getElementById('new-cust-modal-phone').textContent, name: document.getElementById('new-cust-modal-name').value, address: document.getElementById('new-cust-modal-address').value }; 
+        try { 
+            const r = await callAppsScript('addNewCustomer', c); 
+            btn.innerHTML = oldBtnText; btn.disabled = false;
+            if (r.success) { showToast('Customer saved!', 'success'); ALL_CUSTOMERS.push(r.newCustomer); populateCustomerTable(ALL_CUSTOMERS); document.getElementById('cust-phone').value = r.newCustomer[1]; document.getElementById('cust-name').value = r.newCustomer[0]; document.getElementById('cust-address').value = r.newCustomer[2]; document.getElementById('add-customer-modal').style.display = 'none'; e.target.reset(); } else { onFailure(r); } 
+        } catch(err){ btn.innerHTML = oldBtnText; btn.disabled = false; } 
+    }
     
     async function handleBillNow() {
         if (SALE_LIST_ITEMS.length === 0) return showToast('Add items first.', 'error');
         if (!document.getElementById('cust-phone').value) return showToast('Enter customer phone.', 'error');
+        
+        var btn = document.getElementById('bill-now-btn');
+        var oldBtnText = btn.innerHTML;
+        btn.innerHTML = '<div class="btn-loader"></div>'; btn.disabled = true;
+
         var s = calculateBillingSummary();
         var d = { customer: { phone: document.getElementById('cust-phone').value, name: document.getElementById('cust-name').value || 'Walk-in', address: document.getElementById('cust-address').value }, items: SALE_LIST_ITEMS, subtotal: s.subtotal, discount: s.discountString, shipping: s.shipping, total: s.total, paymentAmount: s.paymentAmount, dueAmount: s.dueAmount };
         try {
             const r = await callAppsScript('processSale', d);
+            btn.innerHTML = oldBtnText; btn.disabled = false;
+            
             if (r.success) {
                 ALL_HISTORY_DATA = null;
                 LATEST_RECEIPT_DATA = r.receiptData; document.getElementById('print-invoice-modal').style.display = 'flex'; resetBillingPage();
                 if (r.updatedStock && r.updatedStock.length > 0) { r.updatedStock.forEach(updatedProduct => { const productIndex = ALL_PRODUCTS.findIndex(p => p[0].toString() === updatedProduct[0].toString()); if (productIndex > -1) { ALL_PRODUCTS[productIndex] = updatedProduct; } }); populateStockTable(ALL_PRODUCTS); populateProductTable(ALL_PRODUCTS); }
                 const dashboardData = await callAppsScript('getDashboardData'); updateDashboard(dashboardData);
             } else onFailure(r);
-        } catch (err) {}
+        } catch (err) {
+            btn.innerHTML = oldBtnText; btn.disabled = false;
+        }
     }
 
     function handleEditCustomer(e) { var row = e.target.closest('tr'); row.querySelectorAll('.customer-edit-input').forEach(function(i) { i.readOnly = false; }); row.querySelector('.edit-customer-btn').classList.add('hidden'); row.querySelector('.save-customer-btn').classList.remove('hidden'); }
@@ -809,17 +888,65 @@
     function handleShowSalesReport() { var from = document.getElementById('sales-from-date').value, to = document.getElementById('sales-to-date').value, term = document.getElementById('sales-search').value.toLowerCase(); var f = ALL_SALES.filter(function(s) { return (!from || new Date(s[1].split(' ')[0].split('/').reverse().join('-')) >= new Date(from)) && (!to || new Date(s[1].split(' ')[0].split('/').reverse().join('-')) <= new Date(to)) && (!term || s[0].toString().toLowerCase().includes(term) || s[3].toLowerCase().includes(term)); }); populateSalesTable(f); }
     async function handleReprint() { var id = document.getElementById('reprint-invoice-id').value; if (!id) return showToast('Enter invoice number.', 'error'); try { const r = await callAppsScript('findInvoice', id); if (r.success) printInvoice(r.invoiceData); else onFailure(r); } catch(err){} }
     
-    async function handleFindInvoiceForReturn() { var id = document.getElementById('return-invoice-id').value; if (!id) return; RETURN_QUEUE = []; renderReturnQueue(); document.getElementById('return-list-container').style.display = 'none'; try { const res = await callAppsScript('getReturnableInvoiceDetails', id); if (res.success) { document.getElementById('return-invoice-display').textContent = '#' + res.invoiceId; var list = document.getElementById('return-product-list'); list.innerHTML = res.products.map(function(p) { var statusClass = p.returnableQty > 0 ? 'bg-red-500 hover:bg-red-600' : 'bg-gray-400 cursor-not-allowed'; var statusText = p.returnableQty > 0 ? 'Return' : 'Returned'; return `<div class="flex justify-between items-center bg-gray-100 p-3 rounded-md"><div><p class="font-semibold">${p.name}</p><p class="text-sm text-gray-500">SKU: ${p.sku} | Sold: ${p.soldQty} | Returned: ${p.returnedQty}</p></div><button id="return-action-btn-${p.sku}" class="text-white px-3 py-1 rounded-md open-return-modal-btn ${statusClass}" data-sku="${p.sku}" data-name="${p.name}" data-invoiceid="${res.invoiceId}" data-max-return="${p.returnableQty}" ${p.returnableQty <= 0 ? 'disabled' : ''}>${statusText}</button></div>`; }).join(''); document.getElementById('return-products-container').style.display = 'block'; list.querySelectorAll('.open-return-modal-btn').forEach(function(b) { b.addEventListener('click', function() { var max = this.dataset.maxReturn; document.getElementById('return-modal-pname').textContent = this.dataset.name; document.getElementById('return-modal-sku').value = this.dataset.sku; document.getElementById('return-modal-invoiceid').value = this.dataset.invoiceid; document.getElementById('return-modal-maxqty').value = max; var qtyInput = document.getElementById('return-modal-qty'); qtyInput.max = max; qtyInput.value = 1; document.getElementById('return-qty-modal').style.display = 'flex'; qtyInput.focus(); }); }); } else onFailure(res); } catch(err){} }
+    async function handleFindInvoiceForReturn() { 
+        var id = document.getElementById('return-invoice-id').value; 
+        if (!id) return; 
+        
+        var btn = document.getElementById('check-invoice-btn');
+        var oldBtnText = btn.innerHTML;
+        btn.innerHTML = '<div class="btn-loader" style="width: 16px; height: 16px; border-width: 2px;"></div>'; btn.disabled = true;
+
+        RETURN_QUEUE = []; renderReturnQueue(); document.getElementById('return-list-container').style.display = 'none'; 
+        try { 
+            const res = await callAppsScript('getReturnableInvoiceDetails', id); 
+            btn.innerHTML = oldBtnText; btn.disabled = false;
+            if (res.success) { document.getElementById('return-invoice-display').textContent = '#' + res.invoiceId; var list = document.getElementById('return-product-list'); list.innerHTML = res.products.map(function(p) { var statusClass = p.returnableQty > 0 ? 'bg-red-500 hover:bg-red-600' : 'bg-gray-400 cursor-not-allowed'; var statusText = p.returnableQty > 0 ? 'Return' : 'Returned'; return `<div class="flex justify-between items-center bg-gray-100 p-3 rounded-md"><div><p class="font-semibold">${p.name}</p><p class="text-sm text-gray-500">SKU: ${p.sku} | Sold: ${p.soldQty} | Returned: ${p.returnedQty}</p></div><button id="return-action-btn-${p.sku}" class="text-white px-3 py-1 rounded-md open-return-modal-btn ${statusClass}" data-sku="${p.sku}" data-name="${p.name}" data-invoiceid="${res.invoiceId}" data-max-return="${p.returnableQty}" ${p.returnableQty <= 0 ? 'disabled' : ''}>${statusText}</button></div>`; }).join(''); document.getElementById('return-products-container').style.display = 'block'; list.querySelectorAll('.open-return-modal-btn').forEach(function(b) { b.addEventListener('click', function() { var max = this.dataset.maxReturn; document.getElementById('return-modal-pname').textContent = this.dataset.name; document.getElementById('return-modal-sku').value = this.dataset.sku; document.getElementById('return-modal-invoiceid').value = this.dataset.invoiceid; document.getElementById('return-modal-maxqty').value = max; var qtyInput = document.getElementById('return-modal-qty'); qtyInput.max = max; qtyInput.value = 1; document.getElementById('return-qty-modal').style.display = 'flex'; qtyInput.focus(); }); }); } else onFailure(res); 
+        } catch(err){ btn.innerHTML = oldBtnText; btn.disabled = false; } 
+    }
     
     function handleAddToReturnQueue(e) { e.preventDefault(); var qty = parseInt(document.getElementById('return-modal-qty').value); var max = parseInt(document.getElementById('return-modal-maxqty').value); if (qty > max) return showToast('Cannot return more than ' + max + ' items.', 'error'); var sku = document.getElementById('return-modal-sku').value; var item = { invoiceId: document.getElementById('return-modal-invoiceid').value, sku: sku, name: document.getElementById('return-modal-pname').textContent, quantity: qty }; RETURN_QUEUE.push(item); var btn = document.getElementById('return-action-btn-' + sku); if (btn) { btn.classList.remove('bg-red-500', 'hover:bg-red-600'); btn.classList.add('bg-gray-400', 'cursor-not-allowed'); btn.textContent = 'Added to List'; btn.disabled = true; } renderReturnQueue(); document.getElementById('return-qty-modal').style.display = 'none'; document.getElementById('return-qty-form').reset(); }
     
     function renderReturnQueue() { var list = document.getElementById('return-queue-list'); if(RETURN_QUEUE.length > 0) { document.getElementById('return-list-container').style.display = 'block'; list.innerHTML = RETURN_QUEUE.map(function(item, index) { return `<li class="text-sm flex justify-between items-center"><span>${item.quantity} x ${item.name}</span><button class="text-red-500 text-xs remove-return-queue-item font-bold" data-index="${index}">REMOVE</button></li>`; }).join(''); list.querySelectorAll('.remove-return-queue-item').forEach(function(btn){ btn.addEventListener('click', function(){ var removedItem = RETURN_QUEUE.splice(this.dataset.index, 1)[0]; var mainBtn = document.getElementById('return-action-btn-' + removedItem.sku); if (mainBtn) { mainBtn.classList.remove('bg-gray-400', 'cursor-not-allowed'); mainBtn.classList.add('bg-red-500', 'hover:bg-red-600'); mainBtn.textContent = 'Return'; mainBtn.disabled = false; } renderReturnQueue(); }); }); } else document.getElementById('return-list-container').style.display = 'none'; }
-    async function handleProcessReturnList() { if (RETURN_QUEUE.length === 0) return showToast('No items in the return list.', 'error'); try { const r = await callAppsScript('processReturn', RETURN_QUEUE); if(r.success) { ALL_HISTORY_DATA = null; showToast(r.message, 'success'); document.getElementById('return-invoice-id').value = ''; document.getElementById('return-products-container').style.display = 'none'; RETURN_QUEUE = []; renderReturnQueue(); const data = await callAppsScript('getInitialData'); ALL_SALES = data.sales; ALL_PRODUCTS = data.stock; populateSalesTable(ALL_SALES); populateStockTable(ALL_PRODUCTS); populateProductTable(ALL_PRODUCTS); } else onFailure(r); } catch(err) {} }
+    async function handleProcessReturnList() { 
+        if (RETURN_QUEUE.length === 0) return showToast('No items in the return list.', 'error'); 
+        
+        var btn = document.getElementById('process-return-list-btn');
+        var oldBtnText = btn.innerHTML;
+        btn.innerHTML = '<div class="btn-loader"></div>'; btn.disabled = true;
+
+        try { 
+            const r = await callAppsScript('processReturn', RETURN_QUEUE); 
+            btn.innerHTML = oldBtnText; btn.disabled = false;
+            if(r.success) { ALL_HISTORY_DATA = null; showToast(r.message, 'success'); document.getElementById('return-invoice-id').value = ''; document.getElementById('return-products-container').style.display = 'none'; RETURN_QUEUE = []; renderReturnQueue(); const data = await callAppsScript('getInitialData'); ALL_SALES = data.sales; ALL_PRODUCTS = data.stock; populateSalesTable(ALL_SALES); populateStockTable(ALL_PRODUCTS); populateProductTable(ALL_PRODUCTS); } else onFailure(r); 
+        } catch(err) { btn.innerHTML = oldBtnText; btn.disabled = false; } 
+    }
     
     function handleAddToPrintQueue() { var sku = document.getElementById('barcode-sku').value; var qty = document.getElementById('barcode-qty').value; if (!sku || !qty || parseInt(qty) < 1) return showToast('Invalid SKU or quantity', 'error'); var p = ALL_PRODUCTS.find(function(p) { return p[0].toString() === sku; }); if (!p) return showToast('Product not found', 'error'); BARCODE_PRINT_LIST.push({sku: sku, quantity: parseInt(qty), name: p[1], price: p[3] }); renderBarcodePrintList(); document.getElementById('barcode-sku').value = ''; document.getElementById('barcode-qty').value = ''; }
-    async function handleGenerateBarcodes() { if (BARCODE_PRINT_LIST.length === 0) return showToast('Add items to queue first', 'error'); try { const r = await callAppsScript('getProductsForBarcode', BARCODE_PRINT_LIST); if (r.success) { printBarcodes(r.labels); BARCODE_PRINT_LIST = []; renderBarcodePrintList(); } else onFailure(r); } catch(err) {} }
+    async function handleGenerateBarcodes() { 
+        if (BARCODE_PRINT_LIST.length === 0) return showToast('Add items to queue first', 'error'); 
+        var btn = document.getElementById('generate-barcode-btn');
+        var oldBtnText = btn.innerHTML;
+        btn.innerHTML = '<div class="btn-loader"></div>'; btn.disabled = true;
+        try { 
+            const r = await callAppsScript('getProductsForBarcode', BARCODE_PRINT_LIST); 
+            btn.innerHTML = oldBtnText; btn.disabled = false;
+            if (r.success) { printBarcodes(r.labels); BARCODE_PRINT_LIST = []; renderBarcodePrintList(); } else onFailure(r); 
+        } catch(err) { btn.innerHTML = oldBtnText; btn.disabled = false; } 
+    }
     
-    async function handleAddBrand(e){ e.preventDefault(); var brandName = document.getElementById('new-brand-name').value.trim(); if(!brandName) return showToast('Brand name is required.', 'error'); try { const res = await callAppsScript('addNewBrand', brandName); if(res.success){ showToast('Brand added!', 'success'); ALL_BRANDS.push(res.newBrand); populateBrandTable(ALL_BRANDS); e.target.reset(); } else onFailure(res); } catch(err){} }
+    async function handleAddBrand(e){ 
+        e.preventDefault(); 
+        var brandName = document.getElementById('new-brand-name').value.trim(); 
+        if(!brandName) return showToast('Brand name is required.', 'error'); 
+        var btn = e.target.querySelector('button[type="submit"]');
+        var oldBtnText = btn.innerHTML;
+        btn.innerHTML = '<div class="btn-loader"></div>'; btn.disabled = true;
+        try { 
+            const res = await callAppsScript('addNewBrand', brandName); 
+            btn.innerHTML = oldBtnText; btn.disabled = false;
+            if(res.success){ showToast('Brand added!', 'success'); ALL_BRANDS.push(res.newBrand); populateBrandTable(ALL_BRANDS); e.target.reset(); } else onFailure(res); 
+        } catch(err){ btn.innerHTML = oldBtnText; btn.disabled = false; } 
+    }
     function handleEditBrand(e){ var row = e.target.closest('tr'); var input = row.querySelector('.brand-edit-input'); input.readOnly = false; input.classList.add('customer-edit-input'); row.querySelector('.edit-brand-btn').classList.add('hidden'); row.querySelector('.save-brand-btn').classList.remove('hidden'); }
     async function handleSaveBrandUpdate(e){ var row = e.target.closest('tr'); var saveBtn = row.querySelector('.save-brand-btn'); saveBtn.textContent = '...'; saveBtn.disabled = true; var data = { originalName: row.dataset.originalBrand, newName: row.querySelector('.brand-edit-input').value }; try { const res = await callAppsScript('updateBrand', data); if(res.success){ showToast(res.message, 'success'); var idx = ALL_BRANDS.indexOf(data.originalName); if (idx > -1) { ALL_BRANDS[idx] = data.newName; } populateBrandTable(ALL_BRANDS); } else { onFailure(res); saveBtn.textContent = 'Save'; saveBtn.disabled = false; } } catch(err) { saveBtn.textContent = 'Save'; saveBtn.disabled = false; } }
     
