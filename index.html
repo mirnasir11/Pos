@@ -109,7 +109,7 @@
                 <p id="wait-msg" class="text-red-600 font-bold mt-2 mb-6">Please do not close this window Wait for confirmation.</p>
                 <div id="payment-success-msg" class="hidden animate-bounce-in">
                     <h4 class="text-xl font-bold text-green-700 mb-4">Payment Successful!</h4>
-                    <button onclick="this.innerHTML='<div class=\'btn-loader\'></div>'; this.disabled=true; setTimeout(function(){ document.getElementById('license-lock-overlay').style.display='none'; document.getElementById('main-app').classList.remove('hidden'); startApp(); }, 800);" class="bg-indigo-600 text-white py-2 px-6 rounded-lg font-bold">Reload Application</button>
+                    <button onclick="this.innerHTML='<div class=\'btn-loader\'></div>'; this.disabled=true; setTimeout(function(){ document.getElementById('license-lock-overlay').style.display='none'; document.getElementById('main-app').classList.remove('hidden'); startApp(); }, 800);" class="bg-indigo-600 text-white py-2 px-6 rounded-lg font-bold">Reload POS</button>
                 </div>
             </div>
         </div>
@@ -231,7 +231,7 @@
     };
 
     async function callAppsScript(action, payload) {
-        const silentActions = ['checkLogin', 'getCustomerHistory', 'checkLicense', 'getInitialData', 'getDashboardData', 'processSale', 'getProductsForBarcode', 'getCustomersDataList', 'addNewCustomer', 'addNewBrand', 'getReturnableInvoiceDetails', 'processReturn', 'getUsers', 'changePassword', 'addUser', 'deleteUser', 'getSalesDataList'];
+        const silentActions = ['checkLogin', 'getCustomerHistory', 'checkLicense', 'getInitialData', 'getDashboardData', 'processSale', 'getProductsForBarcode', 'getCustomersDataList', 'addNewCustomer', 'addNewBrand', 'getReturnableInvoiceDetails', 'processReturn', 'getUsers', 'changePassword', 'addUser', 'deleteUser', 'getSalesDataList', 'addStockQuantity'];
         
         if (!silentActions.includes(action)) showLoader();
         try {
@@ -647,15 +647,24 @@ async function handleLogin(e) {
         var quantity = parseInt(quantityInput.value, 10);
         if (!sku || !document.getElementById('add-stock-pname').textContent) return showToast('Please check a valid SKU first.', 'error');
         if (!quantity || quantity <= 0) return showToast('Please enter a valid quantity greater than 0.', 'error');
+        
+        var btn = document.getElementById('save-add-stock-btn');
+        var oldBtnText = btn.innerHTML;
+        btn.innerHTML = '<div class="btn-loader"></div>'; btn.disabled = true;
+
         try {
             const res = await callAppsScript('addStockQuantity', { sku: sku, quantity: quantity });
+            btn.innerHTML = oldBtnText; btn.disabled = false;
+            
             if (res.success) {
                 showToast(res.message, 'success');
                 var productIndex = ALL_PRODUCTS.findIndex(function(p) { return p[0].toString() === res.updatedProduct[0].toString(); });
                 if (productIndex > -1) ALL_PRODUCTS[productIndex] = res.updatedProduct;
                 populateStockTable(ALL_PRODUCTS); closeAddStockModal();
             } else onFailure(res);
-        } catch (e) {}
+        } catch (e) {
+            btn.innerHTML = oldBtnText; btn.disabled = false;
+        }
     }
 
     function updateDashboard(data) { document.getElementById('today-sales').textContent = data.todaysSales || '0.00'; document.getElementById('month-sales').textContent = data.monthsSales || '0.00'; document.getElementById('today-qty').textContent = data.todaysSaleQty || '0'; }
